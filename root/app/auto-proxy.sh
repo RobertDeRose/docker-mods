@@ -1,4 +1,5 @@
 #!/usr/bin/with-contenv bash
+DIRECTIVES=(swag_address swag_port swag_proto swag_url swag_auth swag_auth_bypass swag_server_custom_directive)
 
 AUTO_GEN=""
 # figure out which containers to generate confs for or which confs to remove
@@ -13,7 +14,7 @@ else
             AUTO_GEN="${CONTAINER} ${AUTO_GEN}"
         else
             INSPECTION=$(docker inspect ${CONTAINER})
-            for VAR in swag_address swag_port swag_proto swag_url swag_auth swag_auth_bypass swag_server_custom_directive; do
+            for VAR in ${DIRECTIVES[@]}; do
                 VAR_VALUE=$(echo ${INSPECTION} | jq -r ".[0].Config.Labels[\"${VAR}\"]")
                 if [ "${VAR_VALUE}" == "null" ]; then
                     VAR_VALUE=""
@@ -30,7 +31,7 @@ else
     for CONTAINER in $EXISTING_CONFS; do
         if ! grep -q "${CONTAINER}" <<< "${ENABLED_CONTAINERS}"; then
             echo "**** Removing conf for ${CONTAINER} ****"
-            rm -rf "/auto-proxy/${CONTAINER}.conf" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            rm -rf "/auto-proxy/${CONTAINER}.conf" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.*.conf"
             REMOVED_CONTAINERS="true"
         fi
     done
@@ -40,7 +41,7 @@ fi
 for CONTAINER in ${AUTO_GEN}; do
     INSPECTION=$(docker inspect ${CONTAINER})
     rm -rf "/auto-proxy/${CONTAINER}.conf"
-    for VAR in swag_address swag_port swag_proto swag_url swag_auth swag_auth_bypass swag_server_custom_directive; do
+    for VAR in ${DIRECTIVES[@]}; do
         VAR_VALUE=$(echo ${INSPECTION} | jq -r ".[0].Config.Labels[\"${VAR}\"]")
         if [ "${VAR_VALUE}" == "null" ]; then
             VAR_VALUE=""
@@ -48,60 +49,67 @@ for CONTAINER in ${AUTO_GEN}; do
         echo "${VAR}=\"${VAR_VALUE}\"" >> "/auto-proxy/${CONTAINER}.conf"
     done
     . /auto-proxy/${CONTAINER}.conf
-    if [ -f "/config/nginx/proxy-confs/${CONTAINER}.subdomain.conf.sample" ]; then
-        cp "/config/nginx/proxy-confs/${CONTAINER}.subdomain.conf.sample" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+
+    if [[ "$(echo ${INSPECTION} | jq -r ".[0].Config.Labels[\"swag_proxy_type\"]" | tr '[:upper:]' '[:lower:]')" == "subfolder" ]]; then
+        PROXY_TYPE="subfolder"
+    else
+        PROXY_TYPE="subdomain"
+    fi
+
+    if [ -f "/config/nginx/proxy-confs/${CONTAINER}.${PROXY_TYPE}.conf.sample" ]; then
+        cp "/config/nginx/proxy-confs/${CONTAINER}.${PROXY_TYPE}.conf.sample" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         echo "**** Using preset proxy conf for ${CONTAINER} ****"
         if [ -n "${swag_auth_bypass}" ]; then
             echo "**** Swag auth bypass is auto managed via preset confs and cannot be overridden via env vars ****"
         fi
         if [ -n "${swag_address}" ]; then
-            sed -i "s|set \$upstream_app .*|set \$upstream_app ${swag_address};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|set \$upstream_app .*|set \$upstream_app ${swag_address};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Overriding address as ${swag_address} for ${CONTAINER} ****"
         fi
         if [ -n "${swag_port}" ]; then
-            sed -i "s|set \$upstream_port .*|set \$upstream_port ${swag_port};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|set \$upstream_port .*|set \$upstream_port ${swag_port};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Overriding port as ${swag_port} for ${CONTAINER} ****"
         fi
         if [ -n "${swag_proto}" ]; then
-            sed -i "s|set \$upstream_proto .*|set \$upstream_proto ${swag_proto};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|set \$upstream_proto .*|set \$upstream_proto ${swag_proto};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Overriding proto as ${swag_proto} for ${CONTAINER} ****"
         fi
         if [ -n "${swag_url}" ]; then
             SED_swag_url=$(sed -e 's/[&\\|]/\\&/g; s|$|\\|; $s|\\$||' <<<"${swag_url}")
-            sed -i "s|server_name .*|server_name ${SED_swag_url};|" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|server_name .*|server_name ${SED_swag_url};|" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Overriding url as ${swag_url} for ${CONTAINER} ****"
         fi
         if [ -n "${swag_server_custom_directive}" ]; then
             SED_swag_server_custom_directive=$(sed -e 's/[&\\|]/\\&/g; s|$|\\|; $s|\\$||' <<<"${swag_server_custom_directive}")
-            sed -i -e '/include.*ssl.conf;/a\' -e "    ${SED_swag_server_custom_directive}" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i -e '/include.*ssl.conf;/a\' -e "    ${SED_swag_server_custom_directive}" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Adding custom directive from the swag_server_custom_directive label for ${CONTAINER} ****"
         fi
         if [ "${swag_auth}" == "authelia" ]; then
-            sed -i "s|#include /config/nginx/authelia|include /config/nginx/authelia|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/authelia|include /config/nginx/authelia|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling Authelia for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "authentik" ]; then
-            sed -i "s|#include /config/nginx/authentik|include /config/nginx/authentik|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/authentik|include /config/nginx/authentik|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling Authentik for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "http" ]; then
-            sed -i "s|#auth_basic|auth_basic|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#auth_basic|auth_basic|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling basic http auth for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "ldap" ]; then
             # Old (before standard-base)
-            sed -i "s|#include /config/nginx/ldap.conf;|include /config/nginx/ldap.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#auth_request /auth;|auth_request /auth;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#error_page 401 =200 /ldaplogin;|error_page 401 =200 /ldaplogin;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/ldap.conf;|include /config/nginx/ldap.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#auth_request /auth;|auth_request /auth;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#error_page 401 =200 /ldaplogin;|error_page 401 =200 /ldaplogin;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             # New (after standard-base)
-            sed -i "s|#include /config/nginx/ldap-server.conf;|include /config/nginx/ldap-server.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#include /config/nginx/ldap-location.conf;|include /config/nginx/ldap-location.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/ldap-server.conf;|include /config/nginx/ldap-server.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#include /config/nginx/ldap-location.conf;|include /config/nginx/ldap-location.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling basic http auth for ${CONTAINER} ****"
         fi
     else
         echo "**** No preset proxy conf found for ${CONTAINER}, generating from scratch ****"
-        cp "/config/nginx/proxy-confs/_template.subdomain.conf.sample" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+        cp "/config/nginx/proxy-confs/_template.${PROXY_TYPE}.conf.sample" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         if [ -n "${swag_auth_bypass}" ]; then
-            sed -i 's|^}$||' "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i 's|^}$||' "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             for location in $(echo ${swag_auth_bypass} | tr "," " "); do
-                cat <<DUDE >> "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+                cat <<DUDE >> "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
 
     location ~ ${location} {
         include /config/nginx/proxy.conf;
@@ -115,12 +123,12 @@ for CONTAINER in ${AUTO_GEN}; do
 
 DUDE
             done
-            echo "}" >> "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            echo "}" >> "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         fi
         if [ -z "${swag_address}" ]; then
             swag_address="${CONTAINER}"
         fi
-        sed -i "s|<container_name>|${swag_address}|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+        sed -i "s|<container_name>|${swag_address}|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         echo "**** Setting upstream address ${swag_address} for ${CONTAINER} ****"
         if [ -z "${swag_port}" ]; then
             swag_port=$(docker inspect ${CONTAINER} | jq -r '.[0].NetworkSettings.Ports | keys[0]' | sed 's|/.*||')
@@ -129,47 +137,47 @@ DUDE
                 swag_port="80"
             fi
         fi
-        sed -i "s|set \$upstream_port .*|set \$upstream_port ${swag_port};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+        sed -i "s|set \$upstream_port .*|set \$upstream_port ${swag_port};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         echo "**** Setting port ${swag_port} for ${CONTAINER} ****"
         if [ -z "${swag_proto}" ]; then
             swag_proto="http"
         fi
-        sed -i "s|set \$upstream_proto .*|set \$upstream_proto ${swag_proto};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+        sed -i "s|set \$upstream_proto .*|set \$upstream_proto ${swag_proto};|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         echo "**** Setting proto ${swag_proto} for ${CONTAINER} ****"
         if [ -z "${swag_url}" ]; then
             swag_url="${CONTAINER}.*"
         fi
         SED_swag_url=$(sed -e 's/[&\\|]/\\&/g; s|$|\\|; $s|\\$||' <<<"${swag_url}")
-        sed -i "s|server_name .*|server_name ${SED_swag_url};|" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+        sed -i "s|server_name .*|server_name ${SED_swag_url};|" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
         echo "**** Setting url ${swag_url} for ${CONTAINER} ****"
         if [ -n "${swag_server_custom_directive}" ]; then
             SED_swag_server_custom_directive=$(sed -e 's/[&\\|]/\\&/g; s|$|\\|; $s|\\$||' <<<"${swag_server_custom_directive}")
-            sed -i -e '/include.*ssl.conf;/a\' -e "    ${SED_swag_server_custom_directive}" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i -e '/include.*ssl.conf;/a\' -e "    ${SED_swag_server_custom_directive}" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Adding custom directive from the swag_server_custom_directive label for ${CONTAINER} ****"
         fi
         if [ "${swag_auth}" == "authelia" ]; then
-            sed -i "s|#include /config/nginx/authelia|include /config/nginx/authelia|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/authelia|include /config/nginx/authelia|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling Authelia for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "authentik" ]; then
-            sed -i "s|#include /config/nginx/authentik|include /config/nginx/authentik|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/authentik|include /config/nginx/authentik|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling Authentik for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "http" ]; then
-            sed -i "s|#auth_basic|auth_basic|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#auth_basic|auth_basic|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling basic http auth for ${CONTAINER} ****"
         elif [ "${swag_auth}" == "ldap" ]; then
             # Old (before standard-base)
-            sed -i "s|#include /config/nginx/ldap.conf;|include /config/nginx/ldap.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#auth_request /auth;|auth_request /auth;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#error_page 401 =200 /ldaplogin;|error_page 401 =200 /ldaplogin;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/ldap.conf;|include /config/nginx/ldap.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#auth_request /auth;|auth_request /auth;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#error_page 401 =200 /ldaplogin;|error_page 401 =200 /ldaplogin;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             # New (after standard-base)
-            sed -i "s|#include /config/nginx/ldap-server.conf;|include /config/nginx/ldap-server.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
-            sed -i "s|#include /config/nginx/ldap-location.conf;|include /config/nginx/ldap-location.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.subdomain.conf"
+            sed -i "s|#include /config/nginx/ldap-server.conf;|include /config/nginx/ldap-server.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
+            sed -i "s|#include /config/nginx/ldap-location.conf;|include /config/nginx/ldap-location.conf;|g" "/etc/nginx/http.d/auto-proxy-${CONTAINER}.${PROXY_TYPE}.conf"
             echo "**** Enabling basic http auth for ${CONTAINER} ****"
         fi
     fi
 done
 
-if ([ -n "${AUTO_GEN}" ] || [ "${REMOVED_CONTAINERS}" == "true" ]) && ps aux | grep [n]ginx: > /dev/null; then 
+if ([ -n "${AUTO_GEN}" ] || [ "${REMOVED_CONTAINERS}" == "true" ]) && ps aux | grep [n]ginx: > /dev/null; then
     if /usr/sbin/nginx -c /config/nginx/nginx.conf -t; then
         echo "**** Changes to nginx config are valid, reloading nginx ****"
         /usr/sbin/nginx -c /config/nginx/nginx.conf -s reload

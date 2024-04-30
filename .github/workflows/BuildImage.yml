@@ -3,8 +3,8 @@ name: Build Image
 on: [push, pull_request_target, workflow_dispatch]
 
 env:
-  GITHUB_REPO: "linuxserver/docker-mods" #don't modify
-  ENDPOINT: "linuxserver/mods" #don't modify
+  GITHUB_REPO: "robertderose/docker-mods" #don't modify
+  ENDPOINT: "robertderose/mods" #don't modify
   BASEIMAGE: "swag" #replace
   MODNAME: "auto-proxy" #replace
 
@@ -33,8 +33,6 @@ jobs:
     uses: linuxserver/github-workflows/.github/workflows/docker-mod-builder.yml@v1
     needs: set-vars
     secrets:
-      CR_USER: ${{ secrets.CR_USER }}
-      CR_PAT: ${{ secrets.CR_PAT }}
       DOCKERUSER: ${{ secrets.DOCKERUSER }}
       DOCKERPASS: ${{ secrets.DOCKERPASS }}
     with:
